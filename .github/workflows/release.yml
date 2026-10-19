@@ -1,0 +1,75 @@
+name: Publish application update
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+defaults:
+  run:
+    working-directory: app/BDOPortraitStudio
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+          - os: macos-14
+            target: macos-arm64
+          - os: ubuntu-22.04
+            target: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Unpack application source
+        working-directory: .
+        run: python -c "import zipfile; zipfile.ZipFile('studio-source.zip').extractall('app')"
+      - run: python -m pip install -r requirements.txt "pyinstaller>=6,<7"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a python -m unittest discover -s tests -v
+      - if: runner.os != 'Linux'
+        run: python -m unittest discover -s tests -v
+      - run: python build.py
+      - run: python publish_release.py --target ${{ matrix.target }} --input dist --out release-parts --repo ${{ github.repository }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            app/BDOPortraitStudio/release-parts/*.zip
+            app/BDOPortraitStudio/release-parts/update-*.json
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Unpack application source
+        working-directory: .
+        run: python -c "import zipfile; zipfile.ZipFile('studio-source.zip').extractall('app')"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: app/BDOPortraitStudio/parts
+      - run: python publish_release.py --target source --out parts/source --repo ${{ github.repository }}
+      - run: python publish_release.py --merge parts --out release
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION=$(python -c 'import re,pathlib;print(re.search(r"__version__\s*=\s*\x22([\d.]+)\x22",pathlib.Path("portrait_studio/__init__.py").read_text()).group(1))')
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" release/* --clobber
+          else
+            gh release create "v$VERSION" release/* --title "초상화 스튜디오 $VERSION" --notes-file RELEASE_NOTES.md --latest
+          fi
