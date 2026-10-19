@@ -5,6 +5,8 @@ on:
     tags: ['v*']
 permissions:
   contents: write
+env:
+  PYTHONIOENCODING: utf-8
 defaults:
   run:
     working-directory: app/BDOPortraitStudio
